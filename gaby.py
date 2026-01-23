@@ -1,106 +1,17 @@
 import time
 import serial
 from PIL import Image
+import re
+import math
 
-def wait_cts(ser):
-    for i in range(5):
-        while not ser.cts:
-            time.sleep(0.01)
-
-def serial_slow_write(ser, data):
-    print(data)
-    for x in data:
-        wait_cts(ser)
-        ser.write(bytearray([x]))
-        ser.flush()
-        wait_cts(ser)
-
-def serial_sync(ser):
-    sync = False
-    tries = 0
-    while not sync:
-        ser.reset_input_buffer()
-        serial_slow_write(ser, bytearray([0xA4, 0x00]))
-        ser.timeout = 0.2
-        buf = ser.read(10)
-        if len(buf) >= 10:
-            sync = True
-        else:
-            # we might be desynchronised
-            print("desync :(")
-            serial_slow_write(ser, bytearray([0x00]))
-            tries += 1
-            if tries > 5:
-                raise Exception("Failed to send ENQ command 5 times :(") 
-
-def bring_online(ser):
-    serial_slow_write(ser, bytearray([0xA0, 0x00])) # CLEAR-Kommando -> die Schreibmaschine geht in den OFFLINE-Zustand und wird wieder “Schreibmaschine”.
-    serial_slow_write(ser, bytearray([0xA1, 0x00])) # START-Kommando —> Übergang zu ONLINE wird vorbereitet
-    serial_slow_write(ser, bytearray([0xA4, 0x00])) # ENQ-Kommando —> Schreibmaschine soll Zustand melden
-    serial_slow_write(ser, bytearray([0xA2, 0x00])) # STX-Kommando —> Schreibmaschine wird “Drucker”, Zustand “ONLINE”, Übertragung von Druckbefehlen kann beginnen
-
-def home_carriage(ser):
-    serial_slow_write(ser, bytearray([0x82, 0x0F]))
-    time.sleep(3)
-
-def carriage_return(ser):
-    serial_slow_write(ser, bytearray([0x82, 0x0F]))
-    time.sleep(1)
-
-def print_wheel(ser, wheelpos, strength, advance_carriage = True):
-    if wheelpos > 0x7F:
-        raise Exception("invalid wheelpos, greater than 0x7F")
-    if strength > 0x3F:
-        raise Exception("invalid strength, greater than 0x1F")
-
-    buf = 0x00
-    advance_left = False
-
-    if advance_carriage:
-        buf = buf | (1 << 7)
-
-    if advance_left:
-        buf = buf | (1 << 6)
-
-    buf = buf | (strength & 0x3F)
-
-    #print(bytearray([wheelpos, buf]))
-    serial_slow_write(ser, bytearray([wheelpos, buf]))
-    #time.sleep(0.1)
-
-def space(ser):
-    serial_slow_write(ser, bytearray([0x83, 0x00]))
-    time.sleep(0.05)
-
-def line_feed(ser):
-    serial_slow_write(ser, bytearray([0xD0, 0x0F]))
-    time.sleep(1)
-
-def move_carriage(ser, vertical, leftOrBackwards, distance):
-    if distance > 0xFFF:
-        raise Exception("invalid distance, greater than 4095")
-
-    first_buf = 0x00
-    if vertical:
-        first_buf = first_buf | (1 << 4)
-
-    if leftOrBackwards:
-        first_buf = first_buf | (1 << 5)
-
-    first_buf = first_buf | (1 << 6)
-    first_buf = first_buf | (1 << 7)
-
-    first_buf = first_buf | ((distance >> 8) & 0x0F)
-    second_buf = distance & 0xFF
-
-    #print(bytearray([first_buf, second_buf]))
-    serial_slow_write(ser, bytearray([first_buf, second_buf]))
-    #time.sleep(0.1)
+abs_x_pos = 0
+abs_y_pos = 0
 
 
 daisywheel_charmap = {
-  ".": 0x01,
-  ",": 0x02,
+  ".": 0x00,
+  ",": 0x01,
+  "-": 0x02,
   "v": 0x03,
   "l": 0x04,
   "m": 0x05,
@@ -200,6 +111,133 @@ daisywheel_charmap = {
   "z": 0x63,
 }
 
+
+def wait_cts(ser):
+    for i in range(5):
+        while not ser.cts:
+            time.sleep(0.01)
+
+def serial_slow_write(ser, data):
+    #print(data)
+    for x in data:
+        wait_cts(ser)
+        ser.write(bytearray([x]))
+        ser.flush()
+        wait_cts(ser)
+
+def serial_sync(ser):
+    sync = False
+    tries = 0
+    while not sync:
+        ser.reset_input_buffer()
+        serial_slow_write(ser, bytearray([0xA4, 0x00]))
+        ser.timeout = 0.2
+        buf = ser.read(10)
+        if len(buf) >= 10:
+            sync = True
+        else:
+            # we might be desynchronised
+            print("desync :(")
+            serial_slow_write(ser, bytearray([0x00]))
+            tries += 1
+            if tries > 5:
+                raise Exception("Failed to send ENQ command 5 times :(") 
+
+def bring_online(ser):
+    serial_slow_write(ser, bytearray([0xA0, 0x00])) # CLEAR-Kommando -> die Schreibmaschine geht in den OFFLINE-Zustand und wird wieder “Schreibmaschine”.
+    serial_slow_write(ser, bytearray([0xA1, 0x00])) # START-Kommando —> Übergang zu ONLINE wird vorbereitet
+    serial_slow_write(ser, bytearray([0xA4, 0x00])) # ENQ-Kommando —> Schreibmaschine soll Zustand melden
+    serial_slow_write(ser, bytearray([0xA2, 0x00])) # STX-Kommando —> Schreibmaschine wird “Drucker”, Zustand “ONLINE”, Übertragung von Druckbefehlen kann beginnen
+
+def home_carriage(ser):
+    serial_slow_write(ser, bytearray([0x82, 0x0F]))
+    time.sleep(3)
+
+def carriage_return(ser):
+    serial_slow_write(ser, bytearray([0x82, 0x0F]))
+    time.sleep(1)
+
+def print_wheel(ser, wheelpos, strength, advance_carriage = True):
+    if wheelpos > 0x7F:
+        raise Exception("invalid wheelpos, greater than 0x7F")
+    if strength > 0x3F:
+        raise Exception("invalid strength, greater than 0x1F")
+
+    buf = 0x00
+    advance_left = False
+
+    if advance_carriage:
+        buf = buf | (1 << 7)
+
+    if advance_left:
+        buf = buf | (1 << 6)
+
+    buf = buf | (strength & 0x3F)
+
+    #print(bytearray([wheelpos, buf]))
+    serial_slow_write(ser, bytearray([wheelpos, buf]))
+    #time.sleep(0.1)
+
+def space(ser):
+    serial_slow_write(ser, bytearray([0x83, 0x00]))
+    time.sleep(0.05)
+
+def line_feed(ser):
+    serial_slow_write(ser, bytearray([0xD0, 0x0F]))
+    time.sleep(1)
+
+def move_carriage(ser, vertical, leftOrBackwards, distance):
+    distance = abs(distance)
+    if distance > 0xFFF:
+        raise Exception("invalid distance, greater than 4095")
+
+    first_buf = 0x00
+    if vertical:
+        first_buf = first_buf | (1 << 4)
+
+    if leftOrBackwards:
+        first_buf = first_buf | (1 << 5)
+
+    first_buf = first_buf | (1 << 6)
+    first_buf = first_buf | (1 << 7)
+
+    first_buf = first_buf | ((distance >> 8) & 0x0F)
+    second_buf = distance & 0xFF
+
+    #print(bytearray([first_buf, second_buf]))
+    serial_slow_write(ser, bytearray([first_buf, second_buf]))
+    time.sleep(0.1)
+
+    time.sleep(float(80.0 + 2.0 * distance) / 1000.0)
+
+def move_absolute_x(ser, x):
+    global abs_x_pos
+
+    steps_to_move = x - abs_x_pos
+
+    #print(f"move_absolute_x: x: {x}, abs_x_pos: {abs_x_pos}, steps: {steps_to_move}")
+    if steps_to_move > 0:
+        move_carriage(ser, False, False, steps_to_move)
+
+    if steps_to_move < 0:
+        move_carriage(ser, False, True, steps_to_move)
+
+    abs_x_pos = x
+
+def move_absolute_y(ser, y):
+    global abs_y_pos
+
+    steps_to_move = y - abs_y_pos
+
+    #print(f"move_absolute_y: y: {y}, abs_y_pos: {abs_y_pos}, steps: {steps_to_move}")
+    if steps_to_move > 0:
+        move_carriage(ser, True, False, steps_to_move)
+
+    if steps_to_move < 0:
+        move_carriage(ser, True, True, steps_to_move)
+
+    abs_y_pos = y
+
 def print_char(ser, char, strength):
     if char in daisywheel_charmap:
         print_wheel(ser, daisywheel_charmap[char] + 1, strength)
@@ -250,19 +288,54 @@ ser.port = '/dev/serial/by-id/usb-Silicon_Labs_CP2104_USB_to_UART_Bridge_Control
 ser.rts = True
 ser.open()
 
-bring_online(ser)
 #time.sleep(1)
+#bring_online(ser)
+
 serial_sync(ser)
-
 home_carriage(ser)
-
+time.sleep(1)
+serial_sync(ser)
+serial_sync(ser)
 #for x in range(125):
 #   print_wheel(ser, x + 2, 0x1F)
 
 #content = open('meow.txt', 'r').read()
 #print_string(ser, content, 0x1F)
 
-move_carriage(ser, False, False, 681)
+#move_carriage(ser, False, False, 681)
+
+
+# latex Latex-Briefvorlage.tex && dvitype -dpi=1000 -magnification=1000 Latex-Briefvorlage.dvi
+dvidata = open('dvidata.txt', 'r').read()
+
+current_y_steps = 0
+for line in dvidata.splitlines():
+    # Y coords
+    level_regex = r"level .*?,vv=([\-0-9]+)\)"
+    matches = re.finditer(level_regex, line, re.MULTILINE)
+    for matchNum, match in enumerate(matches, start=1):
+        vv = match.group(1)
+
+        y_steps = math.ceil(float(vv) / 1000.0 * 96.0)
+        current_y_steps = y_steps
+
+    setchar_regex = r"setchar([0-9]+) .*?, hh:=([\-0-9]+)"
+    matches = re.finditer(setchar_regex, line, re.MULTILINE)
+    for matchNum, match in enumerate(matches, start=1):
+        character = str(chr(int(match.group(1))))
+        hh = int(match.group(2))
+
+        x_steps = math.ceil(float(hh) / 1000.0 * 120.0)
+
+        move_absolute_y(ser, current_y_steps + 100)
+        move_absolute_x(ser, x_steps + 100)
+
+        #print(f"{character} @ X: {x_steps}, Y: {abs_y_pos}")
+
+        if character in daisywheel_charmap:
+            print_wheel(ser, daisywheel_charmap[character] + 1, 0x1F, False)
+
+        time.sleep(0.1)
 
 #print_image(ser, "awake.png")
 #ser.flush()
