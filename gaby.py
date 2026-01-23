@@ -206,9 +206,9 @@ def move_carriage(ser, vertical, leftOrBackwards, distance):
 
     #print(bytearray([first_buf, second_buf]))
     serial_slow_write(ser, bytearray([first_buf, second_buf]))
-    time.sleep(0.1)
-
-    time.sleep(float(80.0 + 2.0 * distance) / 1000.0)
+    
+    sleeptime = float(80.0 + 2.0 * distance) / 1000.0
+    time.sleep(sleeptime * 0.8)
 
 def move_absolute_x(ser, x):
     global abs_x_pos
@@ -327,7 +327,7 @@ for line in dvidata.splitlines():
 
         x_steps = math.ceil(float(hh) / 1000.0 * 120.0)
 
-        move_absolute_y(ser, current_y_steps + 100)
+        move_absolute_y(ser, current_y_steps + 50)
         move_absolute_x(ser, x_steps + 100)
 
         #print(f"{character} @ X: {x_steps}, Y: {abs_y_pos}")
@@ -335,7 +335,7 @@ for line in dvidata.splitlines():
         if character in daisywheel_charmap:
             print_wheel(ser, daisywheel_charmap[character] + 1, 0x1F, False)
 
-        time.sleep(0.1)
+        #time.sleep(0.05)
 
 #print_image(ser, "awake.png")
 #ser.flush()
